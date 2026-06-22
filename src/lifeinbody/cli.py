@@ -185,9 +185,27 @@ def draft(
 
 
 @app.command()
-def review() -> None:
-    """Interactive REPL: paste a thread, get a classified draft."""
-    _todo(5, "lifeinbody review")
+def review(
+    debug: bool = typer.Option(False, "--debug", help="Verbose logs to data/lifeinbody.log."),
+) -> None:
+    """Walk every thread needing follow-up; accept, regenerate, or skip each draft."""
+    from lifeinbody import config
+    from lifeinbody.gmail.auth import get_service
+    from lifeinbody.gmail.review import review_pending
+    from lifeinbody.tracker.db import connect
+
+    _setup_logging(debug)
+
+    if not config.ANTHROPIC_API_KEY:
+        console.print("[red]ANTHROPIC_API_KEY is not set in .env — required for draft generation.[/red]")
+        raise typer.Exit(1)
+
+    service = get_service()
+    conn = connect()
+    try:
+        review_pending(conn, service, console=console)
+    finally:
+        conn.close()
 
 
 @app.command()

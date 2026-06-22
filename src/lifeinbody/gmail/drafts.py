@@ -41,6 +41,32 @@ def create_reply_draft(
     return resp
 
 
+def update_reply_draft(
+    service,
+    *,
+    draft_id: str,
+    thread_id: str,
+    to_address: str,
+    subject: str,
+    body: str,
+) -> dict:
+    """Replace the body of an existing draft, keeping the same draft id."""
+    mime = _build_reply_mime(to_address=to_address, subject=subject, body=body)
+    raw = base64.urlsafe_b64encode(mime.as_bytes()).decode("ascii")
+    resp = (
+        service.users()
+        .drafts()
+        .update(
+            userId="me",
+            id=draft_id,
+            body={"message": {"raw": raw, "threadId": thread_id}},
+        )
+        .execute()
+    )
+    log.info("updated draft %s for thread %s", draft_id, thread_id)
+    return resp
+
+
 def record_draft(conn: sqlite3.Connection, draft_id: str, thread_id: str) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO drafts (draft_id, thread_id, created_at, approved) VALUES (?, ?, ?, 0)",
@@ -56,3 +82,15 @@ def thread_has_draft(conn: sqlite3.Connection, thread_id: str) -> bool:
         ).fetchone()
         is not None
     )
+
+
+def get_draft_for_thread(conn: sqlite3.Connection, thread_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT draft_id, thread_id, created_at, approved FROM drafts WHERE thread_id = ?",
+        (thread_id,),
+    ).fetchone()
+
+
+def mark_approved(conn: sqlite3.Connection, draft_id: str) -> None:
+    conn.execute("UPDATE drafts SET approved = 1 WHERE draft_id = ?", (draft_id,))
+    conn.commit()
