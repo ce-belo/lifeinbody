@@ -1,9 +1,7 @@
-"""Life in Body CLI entry point.
-
-Commands are stubbed in Step 1 — each prints a placeholder and exits.
-Subsequent steps fill them in.
-"""
+"""Life in Body CLI entry point."""
 from __future__ import annotations
+
+import logging
 
 import typer
 from rich.console import Console
@@ -19,6 +17,20 @@ sync_app = typer.Typer(help="Pull data from Gmail or the Google Sheet into local
 app.add_typer(sync_app, name="sync")
 
 console = Console()
+
+
+def _setup_logging(debug: bool) -> None:
+    from lifeinbody import config
+
+    config.ensure_dirs()
+    root = logging.getLogger("lifeinbody")
+    root.handlers.clear()
+    root.setLevel(logging.DEBUG if debug else logging.INFO)
+    handler = logging.FileHandler(config.LOG_PATH)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s :: %(message)s"))
+    root.addHandler(handler)
+    # Quiet the noisy google libraries unless we're debugging.
+    logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 
 def _todo(step: int, command: str) -> None:
@@ -79,10 +91,40 @@ def auth(
 
 @sync_app.command("emails")
 def sync_emails(
+    labels: str = typer.Option("INBOX", "--labels", help="Comma-separated Gmail labels to sync."),
     llm_classify: bool = typer.Option(False, "--llm-classify", help="Run LLM second-pass classifier."),
+    debug: bool = typer.Option(False, "--debug", help="Log message bodies + extra detail to data/lifeinbody.log."),
 ) -> None:
     """Pull new Gmail threads into the local SQLite tracker."""
-    _todo(3, "lifeinbody sync emails")
+    from lifeinbody.gmail.auth import get_service
+    from lifeinbody.gmail.sync import sync_emails as run_sync
+    from lifeinbody.tracker.db import connect
+
+    _setup_logging(debug)
+    label_list = [s.strip() for s in labels.split(",") if s.strip()]
+
+    console.print(f"[cyan]Syncing labels:[/cyan] {', '.join(label_list)}")
+    service = get_service()
+    conn = connect()
+    try:
+        with console.status("Pulling threads from Gmail…"):
+            result = run_sync(
+                service,
+                conn,
+                labels=label_list,
+                llm_classify=llm_classify,
+                debug=debug,
+            )
+    finally:
+        conn.close()
+
+    console.print(
+        f"[green]✓ {result['threads_synced']} threads synced[/green] "
+        f"({result['new_threads']} new), "
+        f"[bold]{result['needs_followup_total']}[/bold] need follow-up, "
+        f"[bold]{result['invoice_mentions_this_run']}[/bold] invoice mentions this run "
+        f"([bold]{result['invoice_mentions_total']}[/bold] total)."
+    )
 
 
 @sync_app.command("sheet")

@@ -22,6 +22,13 @@ SHEET_SNAPSHOT_PATH = DATA_DIR / "sheet_snapshot.json"
 DASHBOARD_HTML_PATH = DATA_DIR / "dashboard.html"
 
 GMAIL_ADDRESS = os.environ.get("LIFEINBODY_GMAIL_ADDRESS", "team@lifeinbody.com")
+# Any sender whose address ends in one of these domains is treated as "us".
+OUR_DOMAINS: list[str] = ["lifeinbody.com"]
+# Extra explicit "us" addresses outside the domain list (e.g. a personal Gmail
+# that the team sometimes sends from). Comma-separate via env var.
+OUR_ADDRESSES: list[str] = [
+    a.strip().lower() for a in os.environ.get("LIFEINBODY_OUR_ADDRESSES", "").split(",") if a.strip()
+]
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 SHEET_ID = os.environ.get("LIFEINBODY_SHEET_ID", "")
