@@ -128,9 +128,37 @@ def sync_emails(
 
 
 @sync_app.command("sheet")
-def sync_sheet() -> None:
+def sync_sheet(
+    debug: bool = typer.Option(False, "--debug", help="Verbose logs to data/lifeinbody.log."),
+) -> None:
     """Pull the operations workbook into a cached snapshot."""
-    _todo(6, "lifeinbody sync sheet")
+    from lifeinbody import config
+    from lifeinbody.gmail.auth import OAuthClientMissing
+    from lifeinbody.sheet.client import SheetIdMissing, fetch_snapshot, write_snapshot
+
+    _setup_logging(debug)
+
+    try:
+        with console.status(f"Pulling workbook {config.SHEET_ID[:12]}…"):
+            snapshot = fetch_snapshot()
+    except OAuthClientMissing as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    except SheetIdMissing as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    path = write_snapshot(snapshot)
+
+    total_rows = sum(t["row_count"] for t in snapshot["tabs"])
+    console.print(
+        f"[green]✓ {snapshot['tab_count']} tabs[/green] "
+        f"([bold]{total_rows}[/bold] rows) from "
+        f"[bold]{snapshot['workbook_title']}[/bold] → "
+        f"[dim]{path}[/dim]"
+    )
+    for tab in snapshot["tabs"]:
+        console.print(f"  {tab['name']:<30s} {tab['row_count']:>6,} rows × {tab['col_count']} cols")
 
 
 @app.command()

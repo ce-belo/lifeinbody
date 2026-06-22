@@ -7,7 +7,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 from ..config import (
-    GMAIL_SCOPES,
+    GOOGLE_SCOPES,
     OAUTH_CLIENT_PATH,
     OAUTH_TOKEN_PATH,
     ensure_dirs,
@@ -21,7 +21,7 @@ class OAuthClientMissing(FileNotFoundError):
 def _load_saved_credentials() -> Credentials | None:
     if not OAUTH_TOKEN_PATH.exists():
         return None
-    creds = Credentials.from_authorized_user_file(str(OAUTH_TOKEN_PATH), GMAIL_SCOPES)
+    creds = Credentials.from_authorized_user_file(str(OAUTH_TOKEN_PATH), GOOGLE_SCOPES)
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
         OAUTH_TOKEN_PATH.write_text(creds.to_json())
@@ -33,7 +33,7 @@ def _run_installed_flow() -> Credentials:
         raise OAuthClientMissing(
             f"Missing OAuth client JSON at {OAUTH_CLIENT_PATH}."
         )
-    flow = InstalledAppFlow.from_client_secrets_file(str(OAUTH_CLIENT_PATH), GMAIL_SCOPES)
+    flow = InstalledAppFlow.from_client_secrets_file(str(OAUTH_CLIENT_PATH), GOOGLE_SCOPES)
     creds = flow.run_local_server(port=0, prompt="consent")
     ensure_dirs()
     OAUTH_TOKEN_PATH.write_text(creds.to_json())

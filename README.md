@@ -41,3 +41,16 @@ All secrets and local data live in `credentials/` and `data/` — both gitignore
 6. Run `lifeinbody auth`. A browser opens, you sign in as the inbox owner, approve the three scopes (Google will warn "unverified app" — proceed; you're the developer). The refresh token is saved to `credentials/token.json`.
 
 Re-run with `lifeinbody auth --force` to delete the saved token and re-authorize (e.g. if you signed in as the wrong account).
+
+## Setting up Sheets access (one-time)
+
+Sheets uses the **same OAuth token** as Gmail — the app's scope list includes `spreadsheets.readonly`, so a single `lifeinbody auth` call grants both. (Service-account auth was the original plan but Google Workspace's "Secure by Default" org policy disables service-account key downloads on most newer orgs.)
+
+1. **Enable the Sheets API** in the same `lifeinbody-secretary` project at https://console.cloud.google.com → APIs & Services → Library → search "Google Sheets API" → Enable.
+2. **OAuth consent screen → Scopes → Add or remove scopes**. Add `https://www.googleapis.com/auth/spreadsheets.readonly` to the existing three Gmail scopes. Save.
+3. Confirm `LIFEINBODY_SHEET_ID` in `.env` points to the operations workbook (the long ID in the URL between `/d/` and `/edit`).
+4. Make sure the operations workbook is shared with the Google account you authenticate as (e.g. `team@lifeinbody.com`) — at least Viewer.
+5. Re-authorize: `lifeinbody auth --force`. The browser flow will list the new Sheets scope alongside the Gmail ones; approve.
+6. Run `lifeinbody sync sheet`. A snapshot lands at `data/sheet_snapshot.json`.
+
+To onboard a new teammate: they need to be in the project's OAuth "Test users" list, have View+ access to the sheet, and run `lifeinbody auth --force` from their machine. No shared credential file to distribute.
