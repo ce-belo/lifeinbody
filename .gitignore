@@ -1,0 +1,25 @@
+# Secrets & local data
+.env
+credentials/
+data/
+*.sqlite
+*.db
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
