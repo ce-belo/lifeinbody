@@ -6,6 +6,7 @@ thread, extracts invoice mentions, and upserts everything into the tracker DB.
 from __future__ import annotations
 
 import base64
+import html
 import logging
 import sqlite3
 from dataclasses import asdict
@@ -87,34 +88,41 @@ def _decode_body(part: dict) -> str:
         return ""
 
 
-def _extract_plain_text(payload: dict) -> str:
-    """Walk a Gmail payload tree and return the best text/plain body found."""
+def _walk_payload_text(payload: dict) -> str:
+    """Walk a Gmail payload tree and return the best text/plain body found,
+    falling back to tag-stripped HTML if no plain part exists."""
     if not payload:
         return ""
     mime = payload.get("mimeType", "")
     if mime == "text/plain":
         return _decode_body(payload)
     if mime.startswith("multipart/") or payload.get("parts"):
-        # Prefer text/plain anywhere in the tree before falling back to html.
         plain = ""
-        html = ""
+        html_body = ""
         for part in payload.get("parts", []):
-            sub = _extract_plain_text(part)
+            sub = _walk_payload_text(part)
             if part.get("mimeType") == "text/plain" and sub:
                 return sub
-            if part.get("mimeType") == "text/html" and not html:
-                html = _decode_body(part)
+            if part.get("mimeType") == "text/html" and not html_body:
+                html_body = _decode_body(part)
             if sub and not plain:
                 plain = sub
         if plain:
             return plain
-        if html:
+        if html_body:
             import re as _re
-            return _re.sub(r"<[^>]+>", " ", html)
+            return _re.sub(r"<[^>]+>", " ", html_body)
     if mime == "text/html":
         import re as _re
         return _re.sub(r"<[^>]+>", " ", _decode_body(payload))
     return ""
+
+
+def _extract_plain_text(payload: dict) -> str:
+    """Public entry point: walk the payload tree, then decode HTML entities once
+    (covers both true text/html parts and quoted-HTML chunks inside text/plain)."""
+    text = _walk_payload_text(payload)
+    return html.unescape(text) if text else ""
 
 
 def _is_from_us(email_: str, label_ids: list[str]) -> bool:
@@ -298,6 +306,9 @@ def sync_emails(
             continue
 
         raw_msgs = raw_thread.get("messages", []) or []
+        # Drop our own unsent drafts — Gmail attaches them to the thread, but
+        # they're not real correspondence and would flip last_message_from to "us".
+        raw_msgs = [m for m in raw_msgs if "DRAFT" not in (m.get("labelIds") or [])]
         if not raw_msgs:
             continue
 
