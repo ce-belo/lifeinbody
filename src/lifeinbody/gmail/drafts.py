@@ -1,1 +1,58 @@
-"""Gmail draft creation — implemented in Step 4."""
+"""Gmail draft creation — builds MIME, calls users.drafts.create, records to DB."""
+from __future__ import annotations
+
+import base64
+import logging
+import sqlite3
+from datetime import datetime, timezone
+from email.message import EmailMessage
+
+log = logging.getLogger("lifeinbody.gmail.drafts")
+
+
+def _build_reply_mime(*, to_address: str, subject: str, body: str) -> EmailMessage:
+    msg = EmailMessage()
+    msg["To"] = to_address
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+    msg["Subject"] = subject
+    msg.set_content(body)
+    return msg
+
+
+def create_reply_draft(
+    service,
+    *,
+    thread_id: str,
+    to_address: str,
+    subject: str,
+    body: str,
+) -> dict:
+    """Create a Gmail draft as a reply on the given thread. Returns the API response."""
+    mime = _build_reply_mime(to_address=to_address, subject=subject, body=body)
+    raw = base64.urlsafe_b64encode(mime.as_bytes()).decode("ascii")
+    resp = (
+        service.users()
+        .drafts()
+        .create(userId="me", body={"message": {"raw": raw, "threadId": thread_id}})
+        .execute()
+    )
+    log.info("created draft %s for thread %s", resp.get("id"), thread_id)
+    return resp
+
+
+def record_draft(conn: sqlite3.Connection, draft_id: str, thread_id: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO drafts (draft_id, thread_id, created_at, approved) VALUES (?, ?, ?, 0)",
+        (draft_id, thread_id, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def thread_has_draft(conn: sqlite3.Connection, thread_id: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM drafts WHERE thread_id = ? LIMIT 1", (thread_id,)
+        ).fetchone()
+        is not None
+    )

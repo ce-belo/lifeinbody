@@ -146,9 +146,42 @@ def summary(
 def draft(
     thread_id: str = typer.Argument(None, help="Gmail thread ID to draft for."),
     all_pending: bool = typer.Option(False, "--all-pending", help="Draft for every new+followup thread without a draft."),
+    debug: bool = typer.Option(False, "--debug", help="Verbose logs to data/lifeinbody.log."),
 ) -> None:
     """Generate a Gmail draft reply for one thread (or every pending thread)."""
-    _todo(4, "lifeinbody draft")
+    from lifeinbody import config
+    from lifeinbody.gmail.auth import get_service
+    from lifeinbody.gmail.draft_runner import draft_for_thread, list_pending_thread_ids
+    from lifeinbody.tracker.db import connect
+
+    _setup_logging(debug)
+
+    if not config.ANTHROPIC_API_KEY:
+        console.print("[red]ANTHROPIC_API_KEY is not set in .env — required for draft generation.[/red]")
+        raise typer.Exit(1)
+    if all_pending and thread_id:
+        console.print("[red]Pass either a thread_id or --all-pending, not both.[/red]")
+        raise typer.Exit(1)
+    if not all_pending and not thread_id:
+        console.print("[red]Pass a thread_id or --all-pending.[/red]")
+        raise typer.Exit(1)
+
+    service = get_service()
+    conn = connect()
+    try:
+        if all_pending:
+            ids = list_pending_thread_ids(conn)
+            console.print(f"Drafting for [bold]{len(ids)}[/bold] pending threads…")
+            for i, tid in enumerate(ids, 1):
+                console.print(f"\n[dim]({i}/{len(ids)})[/dim] thread {tid}")
+                try:
+                    draft_for_thread(conn, service, tid, console=console, verbose=False)
+                except Exception as exc:
+                    console.print(f"  [red]✗ failed: {exc}[/red]")
+        else:
+            draft_for_thread(conn, service, thread_id, console=console, verbose=True)
+    finally:
+        conn.close()
 
 
 @app.command()
