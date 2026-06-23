@@ -305,9 +305,118 @@ def dashboard(
 
 
 @app.command("run-daily")
-def run_daily() -> None:
-    """Sync emails, sync sheet, then summary --email. Designed for cron/launchd."""
-    _todo(10, "lifeinbody run-daily")
+def run_daily(
+    debug: bool = typer.Option(False, "--debug", help="Verbose logs to data/lifeinbody.log."),
+) -> None:
+    """Sync emails → sync sheet → refresh dashboard → email summary draft.
+
+    Designed for cron / launchd. Each step is independent: a failure on any
+    one is logged and reported in the email body but does not abort the rest.
+    """
+    from lifeinbody import config
+    from lifeinbody.dashboard.render import render_dashboard
+    from lifeinbody.gmail.auth import get_service
+    from lifeinbody.gmail.drafts import create_standalone_draft
+    from lifeinbody.gmail.sync import sync_emails as run_sync_emails
+    from lifeinbody.sheet.client import fetch_snapshot, write_snapshot
+    from lifeinbody.summary import build_report, render_text
+    from lifeinbody.tracker.db import connect
+
+    _setup_logging(debug)
+    log = logging.getLogger("lifeinbody.run_daily")
+    log.info("=== run-daily start ===")
+
+    errors: list[str] = []
+    started = __import__("datetime").datetime.now()
+
+    # 1. Sync Gmail INBOX
+    try:
+        with console.status("Syncing Gmail INBOX…"):
+            service = get_service()
+            conn = connect()
+            try:
+                result = run_sync_emails(service, conn, labels=["INBOX"], debug=debug)
+            finally:
+                conn.close()
+        console.print(
+            f"[green]✓ Emails synced[/green]  {result['threads_synced']} threads "
+            f"({result['new_threads']} new), {result['needs_followup_total']} need follow-up."
+        )
+    except Exception as exc:
+        log.exception("email sync failed")
+        errors.append(f"email sync: {exc}")
+        console.print(f"[red]✗ email sync failed:[/red] {exc}")
+
+    # 2. Sync Sheets snapshot
+    try:
+        with console.status("Pulling operations workbook…"):
+            snapshot = fetch_snapshot()
+            path = write_snapshot(snapshot)
+        total_rows = sum(t["row_count"] for t in snapshot["tabs"])
+        console.print(
+            f"[green]✓ Sheet synced[/green]  {snapshot['tab_count']} tabs / {total_rows:,} rows "
+            f"from [bold]{snapshot['workbook_title']}[/bold]."
+        )
+    except Exception as exc:
+        log.exception("sheet sync failed")
+        errors.append(f"sheet sync: {exc}")
+        console.print(f"[red]✗ sheet sync failed:[/red] {exc}")
+
+    # 3. Build report (always — even partial data is useful)
+    conn = connect()
+    try:
+        report = build_report(conn)
+    finally:
+        conn.close()
+
+    # 4. Refresh the HTML dashboard
+    try:
+        dash_path = render_dashboard(report)
+        console.print(f"[green]✓ Dashboard refreshed[/green]  [dim]{dash_path}[/dim]")
+    except Exception as exc:
+        log.exception("dashboard render failed")
+        errors.append(f"dashboard: {exc}")
+        console.print(f"[red]✗ dashboard failed:[/red] {exc}")
+
+    # 5. Email summary draft
+    recipient = config.DAILY_SUMMARY_RECIPIENT
+    if not recipient:
+        console.print(
+            "[yellow]⚠ DAILY_SUMMARY_RECIPIENT not set in .env — skipping email step.[/yellow]"
+        )
+    else:
+        try:
+            service = get_service()
+            body = render_text(report)
+            if errors:
+                body = (
+                    "⚠ run-daily encountered errors — data may be stale:\n"
+                    + "\n".join(f"  - {e}" for e in errors)
+                    + "\n\n" + body
+                )
+            subject = f"Life in Body daily summary — {report.as_of:%Y-%m-%d}"
+            resp = create_standalone_draft(
+                service, to_address=recipient, subject=subject, body=body,
+            )
+            msg_id = (resp.get("message") or {}).get("id", "")
+            console.print(
+                f"[green]✓ Summary draft created[/green]  → {recipient}\n"
+                f"  Open: https://mail.google.com/mail/u/0/#drafts/{msg_id}"
+            )
+        except Exception as exc:
+            log.exception("email summary failed")
+            errors.append(f"email summary: {exc}")
+            console.print(f"[red]✗ email summary failed:[/red] {exc}")
+
+    elapsed = (__import__("datetime").datetime.now() - started).total_seconds()
+    if errors:
+        log.warning("run-daily completed with %d error(s) in %.1fs", len(errors), elapsed)
+        console.print(
+            f"\n[yellow]Completed with {len(errors)} error(s) in {elapsed:.1f}s.[/yellow]"
+        )
+        raise typer.Exit(1)
+    log.info("run-daily completed cleanly in %.1fs", elapsed)
+    console.print(f"\n[green]✓ All daily tasks complete.[/green] [dim]({elapsed:.1f}s)[/dim]")
 
 
 if __name__ == "__main__":

@@ -54,3 +54,46 @@ Sheets uses the **same OAuth token** as Gmail — the app's scope list includes 
 6. Run `lifeinbody sync sheet`. A snapshot lands at `data/sheet_snapshot.json`.
 
 To onboard a new teammate: they need to be in the project's OAuth "Test users" list, have View+ access to the sheet, and run `lifeinbody auth --force` from their machine. No shared credential file to distribute.
+
+## Daily automation (`run-daily` + launchd)
+
+`lifeinbody run-daily` chains the four daily tasks — sync Gmail, sync the sheet, refresh `data/dashboard.html`, and create a Gmail draft of the summary email. Each step is independent: a failure in one is logged and reported in the email body but does not abort the rest.
+
+Set `DAILY_SUMMARY_RECIPIENT` in `.env` first (otherwise the email step is skipped). Then schedule the command via launchd:
+
+1. Save the following as `~/Library/LaunchAgents/com.lifeinbody.daily.plist` (replace `<USER>` with your Mac username):
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+     <key>Label</key><string>com.lifeinbody.daily</string>
+     <key>ProgramArguments</key>
+     <array>
+       <string>/Users/<USER>/lifeinbody/.venv/bin/lifeinbody</string>
+       <string>run-daily</string>
+     </array>
+     <key>WorkingDirectory</key><string>/Users/<USER>/lifeinbody</string>
+     <key>StartCalendarInterval</key>
+     <dict>
+       <key>Hour</key><integer>7</integer>
+       <key>Minute</key><integer>0</integer>
+     </dict>
+     <key>StandardOutPath</key><string>/Users/<USER>/lifeinbody/data/launchd.log</string>
+     <key>StandardErrorPath</key><string>/Users/<USER>/lifeinbody/data/launchd.log</string>
+   </dict>
+   </plist>
+   ```
+
+2. Load it:
+
+   ```bash
+   launchctl load ~/Library/LaunchAgents/com.lifeinbody.daily.plist
+   ```
+
+3. Confirm it's scheduled: `launchctl list | grep lifeinbody`.
+
+Output and errors go to `data/launchd.log`; the full application log is at `data/lifeinbody.log`. Run `lifeinbody run-daily` manually any time to test or to catch up after a missed run.
+
+To stop it: `launchctl unload ~/Library/LaunchAgents/com.lifeinbody.daily.plist`.
