@@ -278,9 +278,30 @@ def review(
 @app.command()
 def dashboard(
     no_open: bool = typer.Option(False, "--no-open", help="Render the HTML but don't open it in a browser."),
+    debug: bool = typer.Option(False, "--debug", help="Verbose logs to data/lifeinbody.log."),
 ) -> None:
     """Build (and open) the HTML business dashboard."""
-    _todo(9, "lifeinbody dashboard")
+    import webbrowser
+
+    from lifeinbody.dashboard.render import render_dashboard
+    from lifeinbody.summary import build_report
+    from lifeinbody.tracker.db import connect
+
+    _setup_logging(debug)
+    conn = connect()
+    try:
+        report = build_report(conn)
+    finally:
+        conn.close()
+
+    path = render_dashboard(report)
+    console.print(f"[green]✓ Dashboard written[/green] → [dim]{path}[/dim]")
+
+    if not no_open:
+        webbrowser.open(f"file://{path}")
+        console.print("  Opened in default browser.")
+    else:
+        console.print(f"  Open it manually: file://{path}")
 
 
 @app.command("run-daily")

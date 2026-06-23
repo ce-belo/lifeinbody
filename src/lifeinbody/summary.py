@@ -18,6 +18,7 @@ from rich.table import Table
 
 from . import config
 from .sheet.metrics import DashboardMetrics, compute_metrics
+from .sheet.models import YearMonthSummary
 from .sheet.parser import parse_snapshot
 from .sheet.client import load_snapshot
 
@@ -39,7 +40,8 @@ class SummaryReport:
     as_of: date
     inbox: InboxState
     metrics: DashboardMetrics | None
-    snapshot_age_minutes: int | None    # how stale is the sheet snapshot?
+    year_summary: tuple[YearMonthSummary, ...] = ()  # for the multi-year dashboard chart
+    snapshot_age_minutes: int | None = None          # how stale is the sheet snapshot?
 
 
 # ---------- data collection ----------
@@ -77,10 +79,12 @@ def _gather_inbox(conn: sqlite3.Connection) -> InboxState:
     )
 
 
-def _load_metrics_safe(as_of: date) -> tuple[DashboardMetrics | None, int | None]:
-    """Load the sheet snapshot and compute metrics. Returns (None, None) if missing."""
+def _load_metrics_safe(
+    as_of: date,
+) -> tuple[DashboardMetrics | None, tuple[YearMonthSummary, ...], int | None]:
+    """Load the sheet snapshot and compute metrics. Returns (None, (), None) if missing."""
     if not config.SHEET_SNAPSHOT_PATH.exists():
-        return None, None
+        return None, (), None
     snapshot = load_snapshot()
     parsed = parse_snapshot(snapshot)
     synced_raw = snapshot.get("synced_at")
@@ -90,18 +94,19 @@ def _load_metrics_safe(as_of: date) -> tuple[DashboardMetrics | None, int | None
     else:
         age_minutes = None
     metrics = compute_metrics(parsed, as_of=as_of)
-    return metrics, age_minutes
+    return metrics, parsed.year_summary, age_minutes
 
 
 def build_report(conn: sqlite3.Connection, as_of: date | None = None) -> SummaryReport:
     as_of = as_of or date.today()
     inbox = _gather_inbox(conn)
-    metrics, snap_age = _load_metrics_safe(as_of)
+    metrics, year_summary, snap_age = _load_metrics_safe(as_of)
     return SummaryReport(
         generated_at=datetime.now(timezone.utc),
         as_of=as_of,
         inbox=inbox,
         metrics=metrics,
+        year_summary=year_summary,
         snapshot_age_minutes=snap_age,
     )
 

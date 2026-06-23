@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Life in Body — {{ as_of }}</title>
+  <style>
+    :root {
+      --bg:#fafafa; --card:#ffffff; --border:#e5e7eb; --text:#111827; --muted:#6b7280;
+      --green:#16a34a; --red:#dc2626; --yellow:#ca8a04; --accent:#3b82f6; --accent-soft:#dbeafe;
+      --stale:#fef2f2; --stale-border:#fecaca;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;padding:32px 24px;background:var(--bg);color:var(--text);
+      font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+    .container{max-width:1100px;margin:0 auto;}
+    header{display:flex;justify-content:space-between;align-items:center;
+      border-bottom:1px solid var(--border);padding-bottom:16px;margin-bottom:24px;}
+    header .logo img{height:64px;width:auto;display:block;}
+    header .as-of{color:var(--muted);font-size:13px;}
+    h2{font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;
+      color:var(--muted);margin:0 0 12px 0;}
+    section{margin-bottom:28px;}
+    .grid{display:grid;gap:16px;}
+    .kpi-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px 18px;}
+    .kpi .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:0.04em;}
+    .kpi .value{font-size:26px;font-weight:600;margin:6px 0 4px 0;letter-spacing:-0.02em;}
+    .kpi .delta{font-size:12px;font-weight:500;}
+    .delta.pos{color:var(--green);}
+    .delta.neg{color:var(--red);}
+    .delta.warn{color:var(--yellow);}
+    .delta.dim{color:var(--muted);}
+    table{width:100%;border-collapse:collapse;}
+    th,td{padding:10px 12px;text-align:left;font-size:13px;}
+    th{font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.05em;
+      border-bottom:1px solid var(--border);}
+    tbody tr{border-bottom:1px solid var(--border);}
+    tbody tr:last-child{border-bottom:none;}
+    tbody tr.stale{background:var(--stale);}
+    td.num{text-align:right;font-variant-numeric:tabular-nums;}
+    .pill{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:500;
+      background:var(--accent-soft);color:#1e3a8a;}
+    .pill.stale{background:#fee2e2;color:#991b1b;}
+    .pill.sent{background:#fef3c7;color:#92400e;}
+    .pill.arrears{background:#fce7f3;color:#9d174d;}
+    .bar-row{display:grid;grid-template-columns:140px 1fr 130px;gap:12px;align-items:center;
+      margin-bottom:8px;}
+    .bar-row .name{font-weight:500;}
+    .bar-track{height:8px;background:#f3f4f6;border-radius:4px;overflow:hidden;}
+    .bar-fill{height:100%;background:var(--accent);border-radius:4px;}
+    .bar-row .val{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums;}
+    .combined{margin-top:12px;padding-top:12px;border-top:1px dashed var(--border);
+      display:flex;justify-content:space-between;font-weight:600;}
+    .receivables-meta{display:flex;gap:16px;margin-bottom:8px;color:var(--muted);}
+    .receivables-meta b{color:var(--text);font-variant-numeric:tabular-nums;}
+    .receivables-meta .stale-amt b{color:var(--red);}
+    .two-col{display:grid;grid-template-columns:2fr 1fr;gap:16px;}
+    @media(max-width:760px){.two-col{grid-template-columns:1fr;}}
+    .inbox-list{display:grid;gap:8px;}
+    .inbox-list .row{display:flex;justify-content:space-between;padding:4px 0;
+      border-bottom:1px dashed var(--border);}
+    .inbox-list .row:last-child{border-bottom:none;}
+    .inbox-list .row .v{font-weight:600;font-variant-numeric:tabular-nums;}
+    .chart-card svg{width:100%;height:auto;display:block;}
+    .chart-legend{display:flex;gap:18px;font-size:12px;color:var(--muted);margin-top:8px;
+      justify-content:flex-end;}
+    .chart-legend .dot{display:inline-block;width:10px;height:10px;border-radius:9999px;
+      vertical-align:middle;margin-right:4px;}
+    footer{color:var(--muted);font-size:12px;text-align:center;margin-top:32px;}
+    .empty-state{color:var(--muted);padding:24px;text-align:center;}
+    .warn-banner{background:#fef3c7;color:#92400e;padding:8px 14px;border-radius:6px;
+      margin-bottom:20px;font-size:13px;}
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <header>
+      <div class="logo">
+        <img src="{{ logo_data_uri }}" alt="life in body">
+      </div>
+      <div class="as-of">Snapshot · {{ as_of }}</div>
+    </header>
+
+    {% if snapshot_warning %}
+    <div class="warn-banner">⚠ {{ snapshot_warning }}</div>
+    {% endif %}
+
+    {# ---------- KPI cards ---------- #}
+    <section>
+      <div class="grid kpi-grid">
+        {% for k in kpis %}
+        <div class="card kpi">
+          <div class="label">{{ k.label }}</div>
+          <div class="value">{{ k.value }}</div>
+          {% if k.delta %}<div class="delta {{ k.delta_cls }}">{{ k.delta }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <div class="two-col">
+
+      <div>
+        {# ---------- YoY chart ---------- #}
+        {% if chart_svg %}
+        <section>
+          <h2>Monthly revenue trend</h2>
+          <div class="card chart-card">
+            {{ chart_svg | safe }}
+            <div class="chart-legend">
+              {% for entry in chart_legend %}
+              <span><span class="dot" style="background:{{ entry.color }}"></span>{{ entry.label }}</span>
+              {% endfor %}
+            </div>
+          </div>
+        </section>
+        {% endif %}
+
+        {# ---------- Outstanding receivables ---------- #}
+        <section>
+          <h2>Outstanding receivables</h2>
+          <div class="card">
+            <div class="receivables-meta">
+              <span>Total: <b>{{ outstanding_total }}</b></span>
+              <span class="stale-amt">Stale (≥{{ stale_weeks }} Mondays): <b>{{ outstanding_stale }}</b></span>
+              <span>{{ outstanding_count }} items</span>
+            </div>
+            {% if outstanding_items %}
+            <table>
+              <thead>
+                <tr>
+                  <th>Family</th>
+                  <th>Student</th>
+                  <th>Month</th>
+                  <th style="text-align:right">Amount</th>
+                  <th style="text-align:right">Weeks</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for it in outstanding_items %}
+                <tr {% if it.is_stale %}class="stale"{% endif %}>
+                  <td>{{ it.family or "—" }}</td>
+                  <td>{{ it.student }}</td>
+                  <td>{{ it.month }}</td>
+                  <td class="num">{{ it.amount }}</td>
+                  <td class="num">{{ it.weeks }}</td>
+                  <td><span class="pill {{ it.pill_cls }}">{{ it.status }}</span></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">✓ All caught up.</div>
+            {% endif %}
+          </div>
+        </section>
+      </div>
+
+      <div>
+        {# ---------- Family concentration ---------- #}
+        {% if top_families %}
+        <section>
+          <h2>Top {{ top_n }} family concentration ({{ workbook_year }} YTD)</h2>
+          <div class="card">
+            {% for f in top_families %}
+            <div class="bar-row">
+              <div class="name">{{ f.name }}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:{{ f.width }}%"></div></div>
+              <div class="val">{{ f.amount }} · {{ f.share }}</div>
+            </div>
+            {% endfor %}
+            <div class="combined">
+              <span>Top {{ top_n }} combined</span>
+              <span>{{ top_combined }}</span>
+            </div>
+          </div>
+        </section>
+        {% endif %}
+
+        {# ---------- Inbox ---------- #}
+        <section>
+          <h2>Inbox</h2>
+          <div class="card inbox-list">
+            <div class="row"><span>Threads in INBOX</span><span class="v">{{ inbox.total_threads }}</span></div>
+            <div class="row"><span>Need review (no approved draft)</span><span class="v">{{ inbox.needs_review }}</span></div>
+            <div class="row"><span>Drafts awaiting approval</span><span class="v">{{ inbox.drafts_unapproved }}</span></div>
+            <div class="row"><span>Drafts approved (ready)</span><span class="v">{{ inbox.drafts_approved }}</span></div>
+            <div class="row"><span>Invoice mentions</span><span class="v">{{ inbox.invoice_mentions }}</span></div>
+            {% if inbox.last_synced %}
+            <div class="row"><span>Last email sync</span><span class="v">{{ inbox.last_synced }}</span></div>
+            {% endif %}
+          </div>
+        </section>
+      </div>
+
+    </div>
+
+    <footer>Generated {{ generated_at }} · run `lifeinbody dashboard` to refresh</footer>
+  </div>
+</body>
+</html>
