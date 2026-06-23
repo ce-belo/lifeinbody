@@ -164,10 +164,49 @@ def sync_sheet(
 @app.command()
 def summary(
     json_out: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
-    email: bool = typer.Option(False, "--email", help="Also send the summary to DAILY_SUMMARY_RECIPIENT."),
+    email: bool = typer.Option(False, "--email", help="Also drop a Gmail draft for DAILY_SUMMARY_RECIPIENT."),
+    debug: bool = typer.Option(False, "--debug", help="Verbose logs to data/lifeinbody.log."),
 ) -> None:
-    """Daily CLI summary — inbox state + business KPIs."""
-    _todo(8, "lifeinbody summary")
+    """Daily summary — inbox state + business KPIs."""
+    from lifeinbody import config
+    from lifeinbody.summary import build_report, render_terminal, render_text, render_json_str
+    from lifeinbody.tracker.db import connect
+
+    _setup_logging(debug)
+    conn = connect()
+    try:
+        report = build_report(conn)
+    finally:
+        conn.close()
+
+    if json_out:
+        # Plain stdout — no Rich coloring, easy to pipe.
+        print(render_json_str(report))
+        return
+
+    render_terminal(report, console)
+
+    if email:
+        recipient = config.DAILY_SUMMARY_RECIPIENT
+        if not recipient:
+            console.print(
+                "[red]--email requested but DAILY_SUMMARY_RECIPIENT is not set in .env.[/red]"
+            )
+            raise typer.Exit(1)
+
+        from lifeinbody.gmail.auth import get_service
+        from lifeinbody.gmail.drafts import create_standalone_draft
+
+        body = render_text(report)
+        subject = f"Life in Body daily summary — {report.as_of:%Y-%m-%d}"
+        service = get_service()
+        resp = create_standalone_draft(service, to_address=recipient, subject=subject, body=body)
+        draft_id = resp.get("id", "")
+        msg_id = (resp.get("message") or {}).get("id", "")
+        console.print(
+            f"\n[green]✓ Draft email saved[/green]  id=[bold]{draft_id}[/bold] → {recipient}\n"
+            f"  Open: https://mail.google.com/mail/u/0/#drafts/{msg_id}"
+        )
 
 
 @app.command()

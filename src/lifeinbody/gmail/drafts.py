@@ -41,6 +41,29 @@ def create_reply_draft(
     return resp
 
 
+def create_standalone_draft(
+    service,
+    *,
+    to_address: str,
+    subject: str,
+    body: str,
+) -> dict:
+    """Create a Gmail draft that isn't a reply to anything (e.g. the daily summary)."""
+    msg = EmailMessage()
+    msg["To"] = to_address
+    msg["Subject"] = subject
+    msg.set_content(body)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+    resp = (
+        service.users()
+        .drafts()
+        .create(userId="me", body={"message": {"raw": raw}})
+        .execute()
+    )
+    log.info("created standalone draft %s", resp.get("id"))
+    return resp
+
+
 def update_reply_draft(
     service,
     *,
