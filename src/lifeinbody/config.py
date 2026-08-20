@@ -40,8 +40,11 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
 ]
 
-# Extra Gmail labels (beyond INBOX) to pull during sync. Configurable per-user.
-EXTRA_GMAIL_LABELS: list[str] = []
+# Extra Gmail labels (beyond INBOX) to pull during sync. "closed" is included
+# so that threads moved out of the INBOX into the "closed" label still get
+# re-evaluated by the classifier (which marks any thread with that label as
+# status='closed'). The dashboard filters those out of the active counts.
+EXTRA_GMAIL_LABELS: list[str] = ["closed"]
 
 BUSINESS_CONTEXT = """
 Life in Body is a small tutoring/coaching practice.

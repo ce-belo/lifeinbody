@@ -21,14 +21,13 @@ QUIT_TOKENS = {"q", "quit", "exit"}
 
 
 def _queue(conn: sqlite3.Connection) -> list[str]:
-    """Threads that still need a human pass: needs_followup=1, status='new',
-    and either no draft yet or a draft that hasn't been approved."""
+    """Threads that still need a human pass: status='new' (ball is in our court)
+    with either no draft yet or a draft that hasn't been approved."""
     rows = conn.execute(
         """SELECT t.thread_id
             FROM threads t
             LEFT JOIN drafts d ON d.thread_id = t.thread_id
             WHERE t.status = 'new'
-              AND t.needs_followup = 1
               AND (d.draft_id IS NULL OR d.approved = 0)
             ORDER BY t.last_message_at DESC"""
     ).fetchall()
@@ -125,7 +124,7 @@ def _review_one(
     while True:
         if body is None:
             with console.status("Drafting with Claude…"):
-                body = generate_draft(messages, tone_hint=tone_hint)
+                body = generate_draft(messages, tone_hint=tone_hint, thread_id=thread_id)
             if body.strip() == "NO_REPLY_NEEDED":
                 console.print("[yellow]Claude says this thread doesn't need a reply — skipping.[/yellow]")
                 return "next"

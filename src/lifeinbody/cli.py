@@ -121,9 +121,7 @@ def sync_emails(
     console.print(
         f"[green]✓ {result['threads_synced']} threads synced[/green] "
         f"({result['new_threads']} new), "
-        f"[bold]{result['needs_followup_total']}[/bold] need follow-up, "
-        f"[bold]{result['invoice_mentions_this_run']}[/bold] invoice mentions this run "
-        f"([bold]{result['invoice_mentions_total']}[/bold] total)."
+        f"[bold]{result['needs_followup_total']}[/bold] need follow-up."
     )
 
 
@@ -212,13 +210,17 @@ def summary(
 @app.command()
 def draft(
     thread_id: str = typer.Argument(None, help="Gmail thread ID to draft for."),
-    all_pending: bool = typer.Option(False, "--all-pending", help="Draft for every new+followup thread without a draft."),
+    all_pending: bool = typer.Option(False, "--all-pending", help="Draft for every new thread without a draft."),
+    nudge_waiting: bool = typer.Option(False, "--nudge-waiting", help="Draft a polite check-in for every status='waiting' thread without a draft."),
+    nudge: bool = typer.Option(False, "--nudge", help="Treat the given thread_id as a nudge (we wrote last)."),
     debug: bool = typer.Option(False, "--debug", help="Verbose logs to data/lifeinbody.log."),
 ) -> None:
-    """Generate a Gmail draft reply for one thread (or every pending thread)."""
+    """Generate a Gmail draft for one thread, every pending thread, or every waiting thread."""
     from lifeinbody import config
     from lifeinbody.gmail.auth import get_service
-    from lifeinbody.gmail.draft_runner import draft_for_thread, list_pending_thread_ids
+    from lifeinbody.gmail.draft_runner import (
+        draft_for_thread, list_nudge_thread_ids, list_pending_thread_ids,
+    )
     from lifeinbody.tracker.db import connect
 
     _setup_logging(debug)
@@ -226,11 +228,18 @@ def draft(
     if not config.ANTHROPIC_API_KEY:
         console.print("[red]ANTHROPIC_API_KEY is not set in .env — required for draft generation.[/red]")
         raise typer.Exit(1)
-    if all_pending and thread_id:
-        console.print("[red]Pass either a thread_id or --all-pending, not both.[/red]")
+    mode_flags = sum(1 for f in (all_pending, nudge_waiting) if f)
+    if mode_flags > 1:
+        console.print("[red]Pass at most one of --all-pending / --nudge-waiting.[/red]")
         raise typer.Exit(1)
-    if not all_pending and not thread_id:
-        console.print("[red]Pass a thread_id or --all-pending.[/red]")
+    if mode_flags and thread_id:
+        console.print("[red]Pass a thread_id OR --all-pending / --nudge-waiting, not both.[/red]")
+        raise typer.Exit(1)
+    if not mode_flags and not thread_id:
+        console.print("[red]Pass a thread_id, --all-pending, or --nudge-waiting.[/red]")
+        raise typer.Exit(1)
+    if nudge and not thread_id:
+        console.print("[red]--nudge only applies when drafting for a single thread_id; use --nudge-waiting for the bulk flow.[/red]")
         raise typer.Exit(1)
 
     service = get_service()
@@ -238,15 +247,28 @@ def draft(
     try:
         if all_pending:
             ids = list_pending_thread_ids(conn)
-            console.print(f"Drafting for [bold]{len(ids)}[/bold] pending threads…")
+            console.print(f"Drafting replies for [bold]{len(ids)}[/bold] pending threads…")
             for i, tid in enumerate(ids, 1):
                 console.print(f"\n[dim]({i}/{len(ids)})[/dim] thread {tid}")
                 try:
-                    draft_for_thread(conn, service, tid, console=console, verbose=False)
+                    draft_for_thread(conn, service, tid, console=console, verbose=False, mode="reply")
+                except Exception as exc:
+                    console.print(f"  [red]✗ failed: {exc}[/red]")
+        elif nudge_waiting:
+            ids = list_nudge_thread_ids(conn)
+            console.print(f"Drafting nudges for [bold]{len(ids)}[/bold] waiting threads…")
+            for i, tid in enumerate(ids, 1):
+                console.print(f"\n[dim]({i}/{len(ids)})[/dim] thread {tid}")
+                try:
+                    draft_for_thread(conn, service, tid, console=console, verbose=False, mode="nudge")
                 except Exception as exc:
                     console.print(f"  [red]✗ failed: {exc}[/red]")
         else:
-            draft_for_thread(conn, service, thread_id, console=console, verbose=True)
+            draft_for_thread(
+                conn, service, thread_id,
+                console=console, verbose=True,
+                mode="nudge" if nudge else "reply",
+            )
     finally:
         conn.close()
 
@@ -277,10 +299,16 @@ def review(
 
 @app.command()
 def dashboard(
+    no_sync: bool = typer.Option(False, "--no-sync", help="Skip the sheet + email sync; just re-render from cached data."),
     no_open: bool = typer.Option(False, "--no-open", help="Render the HTML but don't open it in a browser."),
     debug: bool = typer.Option(False, "--debug", help="Verbose logs to data/lifeinbody.log."),
 ) -> None:
-    """Build (and open) the HTML business dashboard."""
+    """Sync sheet + emails, then build (and open) the HTML business dashboard.
+
+    Sync errors are reported but don't abort the render — a partial dashboard
+    beats no dashboard. LLM classification is intentionally skipped here; run
+    `lifeinbody sync emails --llm-classify` or `lifeinbody draft` on demand.
+    """
     import webbrowser
 
     from lifeinbody.dashboard.render import render_dashboard
@@ -288,6 +316,41 @@ def dashboard(
     from lifeinbody.tracker.db import connect
 
     _setup_logging(debug)
+    log = logging.getLogger("lifeinbody.dashboard")
+
+    if not no_sync:
+        from lifeinbody.gmail.auth import get_service
+        from lifeinbody.gmail.sync import sync_emails as run_sync_emails
+        from lifeinbody.sheet.client import fetch_snapshot, write_snapshot
+
+        try:
+            with console.status("Pulling operations workbook…"):
+                snapshot = fetch_snapshot()
+                write_snapshot(snapshot)
+            total_rows = sum(t["row_count"] for t in snapshot["tabs"])
+            console.print(
+                f"[green]✓ Sheet synced[/green]  {snapshot['tab_count']} tabs / {total_rows:,} rows."
+            )
+        except Exception as exc:
+            log.exception("sheet sync failed")
+            console.print(f"[yellow]⚠ sheet sync failed:[/yellow] {exc} [dim](using cached snapshot)[/dim]")
+
+        try:
+            with console.status("Syncing Gmail INBOX…"):
+                service = get_service()
+                conn = connect()
+                try:
+                    result = run_sync_emails(service, conn, labels=["INBOX"], debug=debug)
+                finally:
+                    conn.close()
+            console.print(
+                f"[green]✓ Emails synced[/green]  {result['threads_synced']} threads "
+                f"({result['new_threads']} new), {result['needs_followup_total']} need follow-up."
+            )
+        except Exception as exc:
+            log.exception("email sync failed")
+            console.print(f"[yellow]⚠ email sync failed:[/yellow] {exc} [dim](using cached DB)[/dim]")
+
     conn = connect()
     try:
         report = build_report(conn)

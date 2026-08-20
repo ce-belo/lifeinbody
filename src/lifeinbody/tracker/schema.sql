@@ -42,3 +42,18 @@ CREATE TABLE IF NOT EXISTS drafts (
   created_at TIMESTAMP,
   approved INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS llm_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at TIMESTAMP NOT NULL,
+  model TEXT NOT NULL,
+  operation TEXT NOT NULL,       -- 'classify' | 'draft'
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cache_read_input_tokens INTEGER DEFAULT 0,
+  cache_creation_input_tokens INTEGER DEFAULT 0,
+  cost_usd REAL NOT NULL,
+  thread_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_usage_occurred_at ON llm_usage(occurred_at);

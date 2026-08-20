@@ -20,6 +20,7 @@ from .. import config
 from ..tracker import db as tracker_db
 from ..tracker.models import InvoiceMention, Message, Thread
 from . import classifier
+from . import drafts as gmail_drafts
 
 log = logging.getLogger("lifeinbody.gmail.sync")
 
@@ -327,7 +328,7 @@ def sync_emails(
         if llm_classify and llm_available and not needs_fu:
             try:
                 from ..llm import classify_followup as llm_followup, LLMUnavailable
-                llm_needs, llm_reason = llm_followup(_header(raw_msgs[-1].get("payload", {}).get("headers", []), "Subject"), messages)
+                llm_needs, llm_reason = llm_followup(_header(raw_msgs[-1].get("payload", {}).get("headers", []), "Subject"), messages, thread_id=tid)
                 if llm_needs:
                     needs_fu, reason = True, f"llm: {llm_reason}"
             except LLMUnavailable as exc:
@@ -368,6 +369,7 @@ def sync_emails(
             conn.commit()
 
     conn.commit()
+    drafts_pruned = gmail_drafts.reconcile_with_gmail(conn, service)
     after_thread_count = tracker_db.thread_count(conn)
 
     return {
@@ -376,5 +378,6 @@ def sync_emails(
         "needs_followup_total": tracker_db.followup_count(conn),
         "invoice_mentions_this_run": new_invoice_rows,
         "invoice_mentions_total": tracker_db.invoice_mention_count(conn),
+        "drafts_pruned": drafts_pruned,
         "labels_used": list(name_to_id.keys()),
     }

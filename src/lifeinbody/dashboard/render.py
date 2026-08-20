@@ -212,6 +212,17 @@ def _build_context(report: SummaryReport) -> dict:
         outstanding_stale = _fmt_money(o.stale_total)
         stale_weeks = o.stale_threshold_weeks
         for it in o.items:
+            refs = report.threads_by_family.get(it.family_id or "", ())
+            threads_payload = [
+                {
+                    "subject": ref.subject,
+                    "sender_name": ref.sender_name or ref.sender_email or "(unknown)",
+                    "status": ref.status,
+                    "url": f"https://mail.google.com/mail/u/0/#inbox/{ref.thread_id}",
+                    "last": ref.last_message_at.astimezone().strftime("%Y-%m-%d"),
+                }
+                for ref in refs
+            ]
             outstanding_items.append({
                 "family": it.family_id,
                 "student": it.student_id,
@@ -221,16 +232,30 @@ def _build_context(report: SummaryReport) -> dict:
                 "status": it.status,
                 "pill_cls": "stale" if it.is_stale else _pill_cls(it.status),
                 "is_stale": it.is_stale,
+                "thread_count": len(threads_payload),
+                "threads": threads_payload,
             })
 
     chart_svg, chart_legend = _render_yoy_chart(report.year_summary, workbook_year) if m else ("", [])
 
+    waiting_detail = [
+        {
+            "name": w.sender_name or w.sender_email or "(unknown)",
+            "email": w.sender_email,
+            "subject": w.subject,
+            "last_contact": w.last_message_at.astimezone().strftime("%Y-%m-%d"),
+            "days": w.business_days_waiting,
+        }
+        for w in report.inbox.waiting_threads
+    ]
     inbox_ctx = {
         "total_threads": f"{report.inbox.total_threads:,}",
+        "closed_threads": f"{report.inbox.closed_threads:,}",
         "needs_review": report.inbox.needs_review,
+        "waiting_on_them": report.inbox.waiting_on_them,
+        "waiting_detail": waiting_detail,
         "drafts_unapproved": report.inbox.drafts_unapproved,
         "drafts_approved": report.inbox.drafts_approved,
-        "invoice_mentions": report.inbox.invoice_mentions,
         "last_synced": report.inbox.last_synced_at.astimezone().strftime("%Y-%m-%d %H:%M")
         if report.inbox.last_synced_at else None,
     }
@@ -262,6 +287,7 @@ def _build_context(report: SummaryReport) -> dict:
         "chart_legend": chart_legend,
         "inbox": inbox_ctx,
         "snapshot_warning": snapshot_warning,
+        "llm_cost": report.llm_cost,
     }
 
 

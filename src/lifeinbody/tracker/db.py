@@ -25,7 +25,9 @@ def thread_count(conn: sqlite3.Connection) -> int:
 
 
 def followup_count(conn: sqlite3.Connection) -> int:
-    return conn.execute("SELECT COUNT(*) FROM threads WHERE needs_followup = 1").fetchone()[0]
+    return conn.execute(
+        "SELECT COUNT(*) FROM threads WHERE needs_followup = 1 AND status != 'closed'"
+    ).fetchone()[0]
 
 
 def invoice_mention_count(conn: sqlite3.Connection) -> int:

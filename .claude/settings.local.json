@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(grep -aoE '\\(\"[^\"]{40,200}\"\\)')"
+    ]
+  }
+}

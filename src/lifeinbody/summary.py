@@ -7,8 +7,10 @@ a plain-text email body, and a JSON blob.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
-from dataclasses import asdict, dataclass
+from collections import defaultdict
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -17,21 +19,51 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import config
+from .gmail.classifier import business_days_since
 from .sheet.metrics import DashboardMetrics, compute_metrics
-from .sheet.models import YearMonthSummary
+from .sheet.models import Family, YearMonthSummary
 from .sheet.parser import parse_snapshot
 from .sheet.client import load_snapshot
 
 
 @dataclass(frozen=True)
+class WaitingThread:
+    sender_name: str
+    sender_email: str
+    subject: str
+    last_message_at: datetime
+    business_days_waiting: int
+
+
+@dataclass(frozen=True)
+class OpenThreadRef:
+    thread_id: str
+    subject: str
+    sender_name: str
+    sender_email: str
+    status: str                # 'new' | 'replied' | 'waiting'
+    last_message_at: datetime
+
+
+@dataclass(frozen=True)
 class InboxState:
     last_synced_at: datetime | None
-    total_threads: int
+    total_threads: int         # all open threads — excludes status='closed'
     total_messages: int
     needs_review: int          # status='new' AND needs_followup=1 AND no approved draft
+    waiting_on_them: int       # status='waiting' AND no approved draft (we replied, no response)
     drafts_unapproved: int     # in `drafts` table with approved=0
     drafts_approved: int       # approved=1 — ready to send manually in Gmail
-    invoice_mentions: int
+    closed_threads: int = 0    # threads currently labeled "closed" in Gmail
+    waiting_threads: tuple[WaitingThread, ...] = ()  # detail for the "waiting on them" card
+
+
+@dataclass(frozen=True)
+class LLMCost:
+    month_usd: float       # current calendar-month total
+    all_time_usd: float    # since first recorded call
+    month_calls: int
+    all_time_calls: int
 
 
 @dataclass(frozen=True)
@@ -42,17 +74,29 @@ class SummaryReport:
     metrics: DashboardMetrics | None
     year_summary: tuple[YearMonthSummary, ...] = ()  # for the multi-year dashboard chart
     snapshot_age_minutes: int | None = None          # how stale is the sheet snapshot?
+    llm_cost: LLMCost | None = None                  # API spend on Anthropic
+    threads_by_family: dict[str, tuple[OpenThreadRef, ...]] = field(default_factory=dict)
 
 
 # ---------- data collection ----------
 
 def _gather_inbox(conn: sqlite3.Connection) -> InboxState:
-    total_threads = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
+    total_threads = conn.execute(
+        "SELECT COUNT(*) FROM threads WHERE status != 'closed'"
+    ).fetchone()[0]
+    closed_threads = conn.execute(
+        "SELECT COUNT(*) FROM threads WHERE status = 'closed'"
+    ).fetchone()[0]
     total_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     needs_review = conn.execute("""
         SELECT COUNT(*) FROM threads t
+        LEFT JOIN drafts d ON d.thread_id = t.thread_id
+        WHERE t.status = 'new' AND d.draft_id IS NULL
+    """).fetchone()[0]
+    waiting_on_them = conn.execute("""
+        SELECT COUNT(*) FROM threads t
         LEFT JOIN drafts d ON d.thread_id = t.thread_id AND d.approved = 1
-        WHERE t.status = 'new' AND t.needs_followup = 1 AND d.draft_id IS NULL
+        WHERE t.status = 'waiting' AND d.draft_id IS NULL
     """).fetchone()[0]
     drafts_unapproved = conn.execute(
         "SELECT COUNT(*) FROM drafts WHERE approved = 0"
@@ -60,31 +104,50 @@ def _gather_inbox(conn: sqlite3.Connection) -> InboxState:
     drafts_approved = conn.execute(
         "SELECT COUNT(*) FROM drafts WHERE approved = 1"
     ).fetchone()[0]
-    invoice_mentions = conn.execute(
-        "SELECT COUNT(*) FROM invoices WHERE status = 'mentioned'"
-    ).fetchone()[0]
     last_synced_raw = conn.execute(
         "SELECT MAX(last_synced_at) FROM threads"
     ).fetchone()[0]
     last_synced = datetime.fromisoformat(last_synced_raw) if last_synced_raw else None
 
+    waiting_rows = conn.execute("""
+        SELECT t.sender_name, t.sender_email, t.subject, t.last_message_at
+        FROM threads t
+        LEFT JOIN drafts d ON d.thread_id = t.thread_id AND d.approved = 1
+        WHERE t.status = 'waiting' AND d.draft_id IS NULL
+        ORDER BY t.last_message_at ASC
+    """).fetchall()
+    waiting_threads = tuple(
+        WaitingThread(
+            sender_name=r["sender_name"] or "",
+            sender_email=r["sender_email"] or "",
+            subject=r["subject"] or "(no subject)",
+            last_message_at=datetime.fromisoformat(r["last_message_at"]),
+            business_days_waiting=business_days_since(
+                datetime.fromisoformat(r["last_message_at"])
+            ),
+        )
+        for r in waiting_rows
+    )
+
     return InboxState(
         last_synced_at=last_synced,
         total_threads=total_threads,
+        closed_threads=closed_threads,
         total_messages=total_messages,
         needs_review=needs_review,
+        waiting_on_them=waiting_on_them,
         drafts_unapproved=drafts_unapproved,
         drafts_approved=drafts_approved,
-        invoice_mentions=invoice_mentions,
+        waiting_threads=waiting_threads,
     )
 
 
 def _load_metrics_safe(
     as_of: date,
-) -> tuple[DashboardMetrics | None, tuple[YearMonthSummary, ...], int | None]:
-    """Load the sheet snapshot and compute metrics. Returns (None, (), None) if missing."""
+) -> tuple[DashboardMetrics | None, tuple[YearMonthSummary, ...], int | None, tuple[Family, ...]]:
+    """Load the sheet snapshot and compute metrics. Returns (None, (), None, ()) if missing."""
     if not config.SHEET_SNAPSHOT_PATH.exists():
-        return None, (), None
+        return None, (), None, ()
     snapshot = load_snapshot()
     parsed = parse_snapshot(snapshot)
     synced_raw = snapshot.get("synced_at")
@@ -94,13 +157,122 @@ def _load_metrics_safe(
     else:
         age_minutes = None
     metrics = compute_metrics(parsed, as_of=as_of)
-    return metrics, parsed.year_summary, age_minutes
+    return metrics, parsed.year_summary, age_minutes, parsed.families
+
+
+_NAME_SPLIT_RE = re.compile(r"[,;&/]| and ", re.IGNORECASE)
+
+
+def _family_match_tokens(family: Family) -> set[str]:
+    """Collect lowercased name tokens worth substring-matching against an inbox sender.
+
+    Includes the family_id, parent/invoice surnames, AND each student's first name —
+    many thread subjects say "Hours with Blake and Daylin" without ever naming the
+    family. Tokens under 4 chars are dropped to dodge common-word false hits.
+    """
+    tokens: set[str] = set()
+    if family.family_id:
+        tokens.add(family.family_id.lower())
+    for source in (family.parent_name, family.invoice_recipient):
+        if not source:
+            continue
+        for chunk in _NAME_SPLIT_RE.split(source):
+            words = chunk.strip().split()
+            if words:
+                tokens.add(words[-1].lower())
+    if family.students:
+        for chunk in _NAME_SPLIT_RE.split(family.students):
+            stripped = chunk.strip()
+            if not stripped:
+                continue
+            for word in stripped.split():
+                # Drop parenthetical aliases like "Gabriella (Gabby)" → "Gabby"
+                cleaned = word.strip("()").lower()
+                if cleaned:
+                    tokens.add(cleaned)
+    return {t for t in tokens if len(t) >= 4}
+
+
+def _load_open_threads(conn: sqlite3.Connection) -> list[OpenThreadRef]:
+    rows = conn.execute(
+        """SELECT thread_id, subject, sender_name, sender_email, status, last_message_at
+           FROM threads WHERE status != 'closed'
+           ORDER BY last_message_at DESC"""
+    ).fetchall()
+    out: list[OpenThreadRef] = []
+    for r in rows:
+        out.append(
+            OpenThreadRef(
+                thread_id=r["thread_id"],
+                subject=r["subject"] or "(no subject)",
+                sender_name=r["sender_name"] or "",
+                sender_email=r["sender_email"] or "",
+                status=r["status"] or "",
+                last_message_at=datetime.fromisoformat(r["last_message_at"]),
+            )
+        )
+    return out
+
+
+def _match_threads_to_families(
+    threads: list[OpenThreadRef], families: tuple[Family, ...]
+) -> dict[str, tuple[OpenThreadRef, ...]]:
+    if not families or not threads:
+        return {}
+    emails_by_family: dict[str, set[str]] = {}
+    tokens_by_family: dict[str, set[str]] = {}
+    for f in families:
+        emails: set[str] = set()
+        if f.alternate_email:
+            emails.add(f.alternate_email.lower())
+        emails_by_family[f.family_id] = emails
+        tokens_by_family[f.family_id] = _family_match_tokens(f)
+
+    by_family: dict[str, list[OpenThreadRef]] = defaultdict(list)
+    for t in threads:
+        s_email = t.sender_email.lower()
+        s_name = t.sender_name.lower()
+        s_subject = t.subject.lower()
+        matched: str | None = None
+        if s_email:
+            for family_id, emails in emails_by_family.items():
+                if s_email in emails:
+                    matched = family_id
+                    break
+        if not matched:
+            for family_id, tokens in tokens_by_family.items():
+                if any(tok in s_name or tok in s_subject for tok in tokens):
+                    matched = family_id
+                    break
+        if matched:
+            by_family[matched].append(t)
+    return {k: tuple(v) for k, v in by_family.items()}
+
+
+def _gather_llm_cost(conn: sqlite3.Connection, as_of: date) -> LLMCost:
+    month_start = as_of.replace(day=1).isoformat()
+    month_row = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0.0), COUNT(*) FROM llm_usage WHERE occurred_at >= ?",
+        (month_start,),
+    ).fetchone()
+    all_row = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0.0), COUNT(*) FROM llm_usage"
+    ).fetchone()
+    return LLMCost(
+        month_usd=float(month_row[0] or 0.0),
+        all_time_usd=float(all_row[0] or 0.0),
+        month_calls=int(month_row[1] or 0),
+        all_time_calls=int(all_row[1] or 0),
+    )
 
 
 def build_report(conn: sqlite3.Connection, as_of: date | None = None) -> SummaryReport:
     as_of = as_of or date.today()
     inbox = _gather_inbox(conn)
-    metrics, year_summary, snap_age = _load_metrics_safe(as_of)
+    metrics, year_summary, snap_age, families = _load_metrics_safe(as_of)
+    llm_cost = _gather_llm_cost(conn, as_of)
+    open_threads = _load_open_threads(conn)
+    threads_by_family = _match_threads_to_families(open_threads, families)
     return SummaryReport(
         generated_at=datetime.now(timezone.utc),
         as_of=as_of,
@@ -108,6 +280,8 @@ def build_report(conn: sqlite3.Connection, as_of: date | None = None) -> Summary
         metrics=metrics,
         year_summary=year_summary,
         snapshot_age_minutes=snap_age,
+        llm_cost=llm_cost,
+        threads_by_family=threads_by_family,
     )
 
 
@@ -146,11 +320,15 @@ def render_terminal(report: SummaryReport, console: Console) -> None:
     inbox_table = Table.grid(padding=(0, 2))
     inbox_table.add_column(style="dim")
     inbox_table.add_column(justify="right")
-    inbox_table.add_row("Threads in INBOX", f"{inbox.total_threads:,}")
+    inbox_table.add_row("Open threads", f"{inbox.total_threads:,}  [dim]({inbox.closed_threads:,} closed)[/dim]")
     inbox_table.add_row("Messages indexed", f"{inbox.total_messages:,}")
     inbox_table.add_row(
-        "Need review (no approved draft)",
+        "Need reply (new)",
         f"[bold yellow]{inbox.needs_review}[/bold yellow]" if inbox.needs_review else "0",
+    )
+    inbox_table.add_row(
+        "Waiting on their reply (>3 biz days)",
+        f"[bold yellow]{inbox.waiting_on_them}[/bold yellow]" if inbox.waiting_on_them else "0",
     )
     inbox_table.add_row(
         "Drafts awaiting approval",
@@ -160,7 +338,6 @@ def render_terminal(report: SummaryReport, console: Console) -> None:
         "Drafts approved, ready to send",
         f"[bold green]{inbox.drafts_approved}[/bold green]" if inbox.drafts_approved else "0",
     )
-    inbox_table.add_row("Invoice mentions tracked", f"{inbox.invoice_mentions}")
     if inbox.last_synced_at:
         inbox_table.add_row("Last email sync", inbox.last_synced_at.astimezone().strftime("%Y-%m-%d %H:%M"))
     console.print(Panel(inbox_table, title="📬  Inbox", border_style="cyan"))
@@ -266,11 +443,11 @@ def render_text(report: SummaryReport) -> str:
     lines.append("")
     lines.append("📬  INBOX")
     inbox = report.inbox
-    lines.append(f"  Threads in INBOX:            {inbox.total_threads:,}")
-    lines.append(f"  Need review (no approved):   {inbox.needs_review}")
+    lines.append(f"  Open threads:                {inbox.total_threads:,}  ({inbox.closed_threads:,} closed)")
+    lines.append(f"  Need reply (new):            {inbox.needs_review}")
+    lines.append(f"  Waiting on their reply:      {inbox.waiting_on_them}")
     lines.append(f"  Drafts awaiting approval:    {inbox.drafts_unapproved}")
     lines.append(f"  Drafts approved (ready):     {inbox.drafts_approved}")
-    lines.append(f"  Invoice mentions tracked:    {inbox.invoice_mentions}")
     if inbox.last_synced_at:
         lines.append(f"  Last email sync:             {inbox.last_synced_at.astimezone():%Y-%m-%d %H:%M}")
     lines.append("")

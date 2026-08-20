@@ -62,15 +62,50 @@
       border-bottom:1px dashed var(--border);}
     .inbox-list .row:last-child{border-bottom:none;}
     .inbox-list .row .v{font-weight:600;font-variant-numeric:tabular-nums;}
+    .inbox-list details{margin-top:0;}
+    .inbox-list details > summary{cursor:pointer;list-style:none;display:flex;
+      justify-content:space-between;padding:4px 0;outline:none;}
+    .inbox-list details > summary::-webkit-details-marker{display:none;}
+    .inbox-list details > summary::after{content:"▾";color:var(--muted);font-size:10px;margin-left:6px;}
+    .inbox-list details[open] > summary::after{content:"▴";}
+    .waiting-list{margin:6px 0 4px 0;padding:6px 0 2px 0;border-top:1px dashed var(--border);
+      display:grid;gap:4px;}
+    .waiting-list .item{display:grid;grid-template-columns:1fr auto;gap:8px;
+      font-size:12px;align-items:baseline;}
+    .waiting-list .item .who{color:var(--text);}
+    .waiting-list .item .who .subj{color:var(--muted);font-size:11px;display:block;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px;}
+    .waiting-list .item .when{color:var(--muted);font-variant-numeric:tabular-nums;font-size:11px;
+      text-align:right;white-space:nowrap;}
+    .waiting-list .empty{color:var(--muted);font-size:12px;padding:2px 0;}
     .chart-card svg{width:100%;height:auto;display:block;}
     .chart-legend{display:flex;gap:18px;font-size:12px;color:var(--muted);margin-top:8px;
       justify-content:flex-end;}
     .chart-legend .dot{display:inline-block;width:10px;height:10px;border-radius:9999px;
       vertical-align:middle;margin-right:4px;}
     footer{color:var(--muted);font-size:12px;text-align:center;margin-top:32px;}
+    .cost-card{background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:14px 18px;margin-top:24px;display:flex;gap:24px;align-items:baseline;
+      justify-content:space-between;flex-wrap:wrap;}
+    .cost-card .label{font-size:11px;color:var(--muted);text-transform:uppercase;
+      letter-spacing:0.5px;}
+    .cost-card .v{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;}
+    .cost-card .sub{font-size:11px;color:var(--muted);margin-left:6px;}
+    .cost-card .title{font-size:12px;color:var(--muted);}
     .empty-state{color:var(--muted);padding:24px;text-align:center;}
     .warn-banner{background:#fef3c7;color:#92400e;padding:8px 14px;border-radius:6px;
       margin-bottom:20px;font-size:13px;}
+    .threads-cell details > summary{cursor:pointer;list-style:none;display:inline-flex;
+      align-items:center;gap:4px;color:var(--accent);font-size:12px;font-weight:500;}
+    .threads-cell details > summary::-webkit-details-marker{display:none;}
+    .threads-cell details > summary::after{content:"▾";font-size:9px;}
+    .threads-cell details[open] > summary::after{content:"▴";}
+    .threads-cell .no-threads{color:var(--muted);font-size:12px;}
+    .threads-cell .panel{margin-top:6px;display:grid;gap:4px;padding:8px;
+      background:#f9fafb;border-radius:6px;font-size:12px;}
+    .threads-cell .panel a{color:var(--text);text-decoration:none;}
+    .threads-cell .panel a:hover{text-decoration:underline;}
+    .threads-cell .panel .meta{color:var(--muted);font-size:11px;}
   </style>
 </head>
 <body>
@@ -137,6 +172,7 @@
                   <th style="text-align:right">Amount</th>
                   <th style="text-align:right">Weeks</th>
                   <th>Status</th>
+                  <th>Open threads</th>
                 </tr>
               </thead>
               <tbody>
@@ -148,6 +184,23 @@
                   <td class="num">{{ it.amount }}</td>
                   <td class="num">{{ it.weeks }}</td>
                   <td><span class="pill {{ it.pill_cls }}">{{ it.status }}</span></td>
+                  <td class="threads-cell">
+                    {% if it.thread_count %}
+                    <details>
+                      <summary>{{ it.thread_count }} thread{{ "" if it.thread_count == 1 else "s" }}</summary>
+                      <div class="panel">
+                        {% for th in it.threads %}
+                        <div>
+                          <a href="{{ th.url }}" target="_blank">{{ th.subject }}</a>
+                          <div class="meta">{{ th.sender_name }} · {{ th.status }} · {{ th.last }}</div>
+                        </div>
+                        {% endfor %}
+                      </div>
+                    </details>
+                    {% else %}
+                    <span class="no-threads">—</span>
+                    {% endif %}
+                  </td>
                 </tr>
                 {% endfor %}
               </tbody>
@@ -184,11 +237,26 @@
         <section>
           <h2>Inbox</h2>
           <div class="card inbox-list">
-            <div class="row"><span>Threads in INBOX</span><span class="v">{{ inbox.total_threads }}</span></div>
-            <div class="row"><span>Need review (no approved draft)</span><span class="v">{{ inbox.needs_review }}</span></div>
+            <div class="row"><span>Open threads</span><span class="v">{{ inbox.total_threads }} <span class="sub" style="color:var(--muted);font-size:11px;font-weight:400">({{ inbox.closed_threads }} closed)</span></span></div>
+            <div class="row"><span>Need reply (new)</span><span class="v">{{ inbox.needs_review }}</span></div>
+            <details>
+              <summary><span>Waiting on their reply (&gt;3 biz days)</span><span class="v">{{ inbox.waiting_on_them }}</span></summary>
+              <div class="waiting-list">
+                {% for w in inbox.waiting_detail %}
+                <div class="item">
+                  <div class="who">
+                    {{ w.name }}{% if w.email and w.email != w.name %} <span style="color:var(--muted);font-size:11px">&lt;{{ w.email }}&gt;</span>{% endif %}
+                    <span class="subj">{{ w.subject }}</span>
+                  </div>
+                  <div class="when">{{ w.last_contact }} · {{ w.days }} biz day{{ "" if w.days == 1 else "s" }}</div>
+                </div>
+                {% else %}
+                <div class="empty">No one outstanding.</div>
+                {% endfor %}
+              </div>
+            </details>
             <div class="row"><span>Drafts awaiting approval</span><span class="v">{{ inbox.drafts_unapproved }}</span></div>
             <div class="row"><span>Drafts approved (ready)</span><span class="v">{{ inbox.drafts_approved }}</span></div>
-            <div class="row"><span>Invoice mentions</span><span class="v">{{ inbox.invoice_mentions }}</span></div>
             {% if inbox.last_synced %}
             <div class="row"><span>Last email sync</span><span class="v">{{ inbox.last_synced }}</span></div>
             {% endif %}
@@ -197,6 +265,22 @@
       </div>
 
     </div>
+
+    {% if llm_cost %}
+    <div class="cost-card">
+      <div class="title">Claude API spend</div>
+      <div>
+        <span class="label">This month</span><br>
+        <span class="v">${{ "%.4f"|format(llm_cost.month_usd) if llm_cost.month_usd < 1 else "%.2f"|format(llm_cost.month_usd) }}</span>
+        <span class="sub">{{ llm_cost.month_calls }} call{{ "" if llm_cost.month_calls == 1 else "s" }}</span>
+      </div>
+      <div>
+        <span class="label">All time</span><br>
+        <span class="v">${{ "%.4f"|format(llm_cost.all_time_usd) if llm_cost.all_time_usd < 1 else "%.2f"|format(llm_cost.all_time_usd) }}</span>
+        <span class="sub">{{ llm_cost.all_time_calls }} call{{ "" if llm_cost.all_time_calls == 1 else "s" }}</span>
+      </div>
+    </div>
+    {% endif %}
 
     <footer>Generated {{ generated_at }} · run `lifeinbody dashboard` to refresh</footer>
   </div>
